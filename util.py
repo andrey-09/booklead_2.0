@@ -5,6 +5,7 @@ import errno
 import functools
 import hashlib
 import logging
+from logging.handlers import RotatingFileHandler                                              
 import numpy as np
 import os
 import random
@@ -15,28 +16,65 @@ import time
 import datetime
 import cv2
 import requests
+from user_agent import generate_user_agent             
 from bs4 import Tag
+from bs4 import BeautifulSoup
 from requests import Response
 from typing import Dict, Optional, Pattern, Union
 import json
 
 
-user_agents = [
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.78 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.157 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 5.1; rv:7.0.1) Gecko/20100101 Firefox/7.0.1',
-    'Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.121 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36',
-    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:49.0) Gecko/20100101 Firefox/49.0'
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
-]
-
-
 LOG_FILE = 'log.txt'
 logging_set_up = False
-
+headers_pr1 = {
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    "Accept-Encoding": "gzip, deflate, br, zstd", 
+    "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8,ru;q=0.7",
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma':'no-cache',
+    'Connection': 'keep-alive',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Sec-Gpc':'1',
+    'Upgrade-Insecure-Requests': '1',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    'dnt': '1',
+    'sec-ch-ua': '"Chromium";v="137", "Google Chrome";v="137", "Not/A)Brand";v="24"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-gpc': '1',
+    'Host':'content.prlib.ru',
+    'Origin':'https://content.prlib.ru'
+}
+headers_pr2=headers_pr1 
+headers_pr2.update({"Host":"www.prlib.ru","Origin": "https://www.prlib.ru"})
+headers_eph2 = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept-Language": "en-US,en;q=0.9",
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma':'no-cache',
+    "Connection": "keep-alive",
+    "Dnt": "1",
+    "Host": "elib.shpl.ru",
+    "Origin":"http://elib.shpl.ru",
+    "Referer":"http://elib.shpl.ru/",
+    "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "cross-site",
+    "Sec-Fetch-User": "?1",
+    "Sec-Gpc": "1",
+    "Upgrade-Insecure-Requests": "1"
+}
+headers_dict={
+"elib.shpl.ru":headers_eph2,
+"www.prlib.ru":headers_pr2
+}
 
 def _setup_logging():
     time_format = '%Y-%m-%d %H:%M:%S'
@@ -48,10 +86,10 @@ def _setup_logging():
         # https://stackoverflow.com/questions/7173033/duplicate-log-output-when-using-python-logging-module
         root_logger.handlers.clear()
 
-    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=20*1024*1024,backupCount=2, encoding='utf-8')
     file_handler.setFormatter(log_formatter)
     root_logger.addHandler(file_handler)
-
+    logging.basicConfig(filemode='w') 
     if os.getenv('LOGTOCONSOLE', '0') == '1':
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(log_formatter)
@@ -99,25 +137,31 @@ def Time_Processing(timedelta):
     minutes, seconds = divmod(round(timedelta.total_seconds()), 60)
     return minutes, seconds
 
-def Postprocess(results_prlDl,width, height,image_path):
+async def Postprocess(images_folder,width, height,image_path):
     """
      Прохожу через бинарные данные в results_prlDl, ставлю их на правильные места в картинке исходной и вывожу все в файл, напртмер 0001.jpg
     """
-    Total_Image=[i for i in range(len(results_prlDl))]
-    for item in results_prlDl:
-        Total_Image[item[0]]=BinaryToDecimal(item[1],os.path.dirname(image_path))
-   
-    os.remove(os.path.join(os.path.dirname(image_path), "test.jpg"))
+    Total_Image=[i for i in range(width*height)]
+    #iterate through each file and add them:
+    for item in range(width*height):
+        #read from file:
+        Total_Image[item]=CV2_Russian(os.path.join(images_folder, str(item)+".jpg")) # название папки на Русском в названии мешало прочитать cv2 файл (это окалаось известный баг cv2)
+    #delete images folder:
+    shutil.rmtree(images_folder)
     regroup=[]
     for h in range(height):
         regroup.append(Total_Image[h*width:(h+1)*width])
-    im_h=cv2.vconcat([cv2.hconcat(item) for item in regroup])
-    
+    try:
+        im_h=cv2.vconcat([cv2.hconcat(item) for item in regroup])
+
     #cv2.imwrite(image_path, im_h) (doesn't work with Russian)
-    result, data = cv2.imencode('.jpg', im_h)
+        result, data = cv2.imencode('.jpg', im_h)
+    except:
+        return False
     fh = open(image_path, 'wb')
     fh.write(data)
     fh.close()
+    return True
 def number_of_images(width, height):
     """
     получаю кол-во картинок по ширине и длине (возможно можно в одну строчку как-то:)
@@ -147,6 +191,7 @@ def CV2_Russian(name):
     chunk = f.read()
     chunk_arr = np.frombuffer(chunk, dtype=np.uint8)
     img = cv2.imdecode(chunk_arr, cv2.IMREAD_COLOR)
+    f.close()        
     return img
     
     
@@ -304,7 +349,7 @@ class Browser:
 
     def _prepare_headers(self, additional_headers: Dict):
         headers = additional_headers if additional_headers else {}
-        headers.update({'User-Agent': random.choice(user_agents)})
+        headers.update({'User-Agent': generate_user_agent(os='win',device_type ='desktop',navigator='chrome')})
         return headers
 
     def _validate_response(self, response: Response, url, expected_ct: Union[str, Pattern]):
